@@ -1,0 +1,30 @@
+__pycache__/
+*.pyc
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Weights (large binary files)
+weights/**/*.pt
+yolov8s.pt
+
+# Dataset (download via script)
+data/chess_pieces/train/
+data/chess_pieces/valid/
+data/chess_pieces/test/
+
+# Output files
+*.png
+*.jpg
+!data/chess_pieces/data.yaml
+
+# OS
+.DS_Store
+
+# IDE
+.vscode/
+.idea/
+
+# Env
+.env
