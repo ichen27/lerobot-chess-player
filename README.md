@@ -1,20 +1,18 @@
-# Little Robot Chess Player
+# Little Robot Checkers Player
 
-A robotics project connecting **chessboard perception, Stockfish move selection, and language-conditioned manipulation**.
+**A checkers-playing robot project combining board perception, game search, and pick-and-place planning.**
 
-The chess software lives here: detect pieces, recover a legal human move, choose a reply, and translate it into pick-and-place instructions. The physical platform is an OMX robot arm; the experimental motion adapter targets LeRobot Pi0.
+The physical prototype uses orange and gray discs on a tabletop board. This repository provides a playable checkers engine, calibrated OpenCV perception, and a command planner for a robot arm. The default is the **6×6 playing region shown in the prototype screenshots**; an 8×8 mode is also available.
 
-**Current status:** the software demo and regression suite run without hardware. End-to-end physical chess play has not been verified in this revision.
+<img src="docs/media/hardware-grasp.jpg" alt="Robot gripper holding a gray checkers disc over the board" width="760">
 
-<img src="docs/media/hardware-grasp.jpg" alt="OMX arm holding a gray checkers piece during the course prototype" width="760">
+*The physical checkers prototype. The software in this revision is tested without an arm; automated execution on the robot is the next integration step.*
 
-*Hardware from the related ROB 400 checkers project. This photograph documents the physical prototype, not autonomous chess execution.*
+[Play locally](#play-without-a-robot) · [Inspect the sample board](#run-board-perception) · [Prototype footage](#physical-prototype) · [Hardware integration](docs/hardware.md)
 
-[Try the demo](#try-it-without-a-robot) · [How it works](#how-it-works) · [Prototype media](#physical-prototype) · [Hardware validation](docs/hardware.md)
+## Play without a robot
 
-## Try it without a robot
-
-Python 3.10 or newer:
+Python 3.10 or newer. The game and opponent need **no external runtime dependencies, model weights, or hardware**.
 
 ```bash
 git clone https://github.com/ichen27/lerobot-chess-player.git
@@ -22,127 +20,100 @@ cd lerobot-chess-player
 python -m venv .venv
 source .venv/bin/activate
 python -m pip install -e ".[dev]"
-chess-demo
+checkers-play
+```
+
+You play orange; minimax plays gray. Enter `a2-b3` for a simple move, `a2xc4xe6` for a complete capture sequence, `?` for legal moves, or `q` to quit. The terminal prints the opponent's manipulation plan as a preview. It never connects to a robot.
+
+For a reproducible JSON demo, an 8×8 game, and tests:
+
+```bash
+checkers-demo
+checkers-play --size 8
 python -m pytest -q
 ```
 
-The demo follows a reproducible opening: white plays `e2e4`, black replies `e7e5`, and the planner produces:
+The demo validates an orange opening, recovers it from the resulting piece layout, chooses a real minimax reply, and outputs the move, commands, and resulting board. Search depth is configurable with `--depth` (default 4).
 
-```text
-pick black pawn from e7, place on e5
-```
-
-It validates both moves and prints the before/after FEN and manipulation instructions as JSON. **The default reply is scripted** so this example needs no camera, model weights, robot, or Stockfish installation. It exercises move recovery and planning, not perception or motion.
-
-To have Stockfish select the reply:
-
-```bash
-brew install stockfish                     # macOS; Ubuntu: sudo apt install stockfish
-chess-demo --stockfish "$(command -v stockfish)"
-# On Ubuntu the executable may be /usr/games/stockfish.
-```
-
-With [uv](https://docs.astral.sh/uv/), use `uv sync --locked --extra dev`, then `uv run chess-demo` and `uv run pytest -q`. The lockfile records a resolved dependency set.
+With [uv](https://docs.astral.sh/uv/): `uv sync --locked --extra dev`, then `uv run checkers-play`.
 
 ## How it works
 
 ```mermaid
 flowchart LR
-    A[Camera frame] --> B[YOLO piece detections]
-    B --> C[Board geometry and observed placement]
-    C --> D[Match against legal moves]
-    D --> E[Authoritative chess state]
-    E --> F[Stockfish reply]
-    F --> G[Manipulation instructions]
-    G --> H[Manual execution or experimental Pi0 adapter]
-    H --> I[Confirmation or camera verification]
+    A[Image and calibration] --> B[Perspective correction]
+    B --> C[Orange and gray disc detection]
+    C --> D[Match an exact legal move]
+    D --> E[Game state with king history]
+    E --> F[Minimax with alpha-beta pruning]
+    F --> G[Capture and pick-place commands]
+    G --> H[Execution adapter — integration pending]
+    H --> I[Observe or explicitly confirm]
     I --> E
 ```
 
-- **Perception:** OpenCV estimates the board corners; a perspective transform maps detections to squares. Off-board detections are discarded, and the strongest detection wins when multiple boxes occupy a square. Unknown piece labels produce an explicit error.
-- **Game state:** an image shows piece placement, not castling rights or move history. Human moves are accepted only when an exact legal move produces the observed placement.
-- **Planning:** captures remove the captured piece first; castling includes the rook move; en passant removes the pawn from its actual square. Promotion produces a manual replacement instruction.
-- **Execution:** manual mode requires confirmation. The experimental arm path must finish without an exception and produce a matching camera observation before the internal board advances.
+| Layer | What it does |
+| --- | --- |
+| **Perception** | Rectifies a calibrated board and classifies disc ownership using HSV color ranges. No trained neural model is required. |
+| **Rules** | Enforces mandatory captures, complete jump sequences, forward-moving men, bidirectional kings, and promotion. |
+| **Opponent** | Searches legal continuations using minimax and alpha-beta pruning with material and advancement scoring. |
+| **Planning** | Emits a capture-removal command for each jumped piece, a pick/place command for each leg, and a manual crowning instruction. |
+| **State verification** | Commits a planned turn only after every command succeeds and a supplied observation matches, or an operator explicitly confirms. |
 
-## Physical prototype
+The 6×6 variant starts with six pieces per side and a dark upper-left square. The 8×8 mode starts with twelve per side and standard playable-square parity. Orange moves toward higher ranks. Movement follows [English checkers rules](https://wcdf.net/rules/rules_of_checkers_english.pdf): men capture forward, a capture is mandatory, and reaching the king row ends that turn. Draw adjudication and tournament clocks are not implemented.
 
-These photos and videos come from the related [robotics-final](https://github.com/ichen27/robotics-final) course project, which uses checkers pieces. They provide context for the arm, gripper, board, and camera work. That repository may require access.
+Color alone does not distinguish men from kings. King status is retained in the game history, and crowning requires manual handling. Image-based move recovery rejects ambiguous or illegal layouts.
 
-[![Twelve-second excerpt of the checkers robot prototype](docs/media/checkers-prototype.gif)](docs/media/checkers-prototype.mp4)
-
-*12-second excerpt at original speed. [Watch the 21-second clip](docs/media/checkers-prototype.mp4). Footage is not an end-to-end chess benchmark.*
-
-<table>
-<tr>
-<td><img src="docs/media/checkers-camera.png" alt="Course prototype camera view with a selected board boundary" width="460"></td>
-<td><img src="docs/media/checkers-board.png" alt="Course prototype rectified 6 by 6 checkers view with colored piece detections" width="380"></td>
-</tr>
-<tr><td>Board boundary in the camera view</td><td>Rectified checkers grid and piece detections</td></tr>
-</table>
-
-[Media origin and processing details](docs/media/README.md)
-
-## Run chess perception
-
-Install the optional vision dependencies and supply trained chess-piece weights:
+## Run board perception
 
 ```bash
 python -m pip install -e ".[vision]"
-python play_chess.py \
-  --yolo-weights /absolute/path/to/chess-best.pt \
-  --stockfish "$(command -v stockfish)" \
-  --camera 0
+checkers-inspect docs/media/checkers-board.png \
+  --calibration examples/screenshot-calibration.json \
+  --output /tmp/checkers-analysis.png
 ```
 
-Start from the standard chess position. Play white and press Enter to scan your move. Without a Pi0 model, the program prints black's instructions; perform them yourself and type `y` to confirm.
+The included calibration finds **5 orange and 5 gray discs** in the supplied screenshot. The regression test checks their exact squares against a manually inspected reference. This is a single calibrated image check, not a general camera-accuracy benchmark.
 
-The repository does **not** bundle trained weights or claim that a general YOLO model recognizes chess pieces. Missing weights produce an error. See [models and training](docs/models.md) for the retained training artifacts and class-label constraints.
+<table>
+<tr>
+<td><img src="docs/media/checkers-board.png" alt="Supplied prototype screenshot of a six by six checkers grid" width="360"></td>
+<td><img src="docs/media/checkers-analysis.png" alt="Output of this revision with ten detected discs and algebraic square labels" width="360"></td>
+</tr>
+<tr><td>Supplied prototype screenshot</td><td>Output generated by this revision</td></tr>
+</table>
 
-Automatic board detection is a geometric heuristic. Inspect its result before relying on it, use a fixed camera and clear board boundaries, and keep the board orientation consistent (`--orientation black_bottom` is available).
+The example calibration is specific to that screenshot. For another image, supply its board corners, orientation, playable-square parity, and measured color ranges. See [perception and calibration](docs/perception.md).
 
-## What is verified
+## Physical prototype
 
-| Component | Evidence and boundary |
-| --- | --- |
-| Board-to-square mapping | Regression tests for confidence ordering, orientation, off-board detections, malformed labels and geometry |
-| Chess logic and manipulation planning | Legal-move matching, captures, castling, en passant, promotion, and illegal-observation tests |
-| Software-only demo | Runs in a clean core environment with no deep-learning packages |
-| Move completion | Tests for manual confirmation, execution failure, and mismatched post-move observations |
-| Pi0 adapter contract | Tests with synthetic tensors and simulated camera/arm boundaries; requires the vision extra to run these tests |
-| Physical chess gameplay | Pending validation with the actual arm, camera, calibration and compatible checkpoint |
+[![Checkers arm prototype in motion](docs/media/checkers-prototype.gif)](docs/media/checkers-prototype.mp4)
 
-The default tests deliberately exclude the interactive hardware utilities in `scripts/`. The core install skips the optional tensor-policy test module; `pip install -e ".[dev,vision]"` enables the complete software suite. GitHub Actions defines both core and vision test jobs.
+*12-second excerpt at original speed. [Watch the full 21-second clip](docs/media/checkers-prototype.mp4).*
 
-[Recorded software validation](docs/validation.md)
+<img src="docs/media/checkers-camera.png" alt="Camera view of the checkers board and arm with the six by six region selected" width="650">
 
-## Hardware integration
+The owner-supplied photos and footage document a course checkers prototype and its physical setup. They predate this software revision and do not establish that the new engine or command planner has run on the arm. [Media sources and processing](docs/media/README.md).
 
-The Pi0 runner is **experimental**. It targets the older ROBOTIS LeRobot 0.3.4 interface and needs a matching checkpoint, normalization statistics, camera feature and joint ordering. Newer LeRobot versions have a different preprocessing contract.
+## Validation and next step
 
-The program now propagates model/connection/execution failures instead of silently switching modes. A fixed number of policy steps is not proof of a completed move; post-move board verification is required. Physical promotion is blocked until a manual replacement flow is validated.
+The automated suite covers rules, search, multi-capture planning, failed execution, rejected observations, geometry, color classification, the supplied screenshot, and command-line play. GitHub Actions runs the dependency-free game on Python 3.10 and 3.12 and the vision suite on Python 3.11.
 
-[Hardware setup boundaries and validation procedure](docs/hardware.md)
+**Hardware execution is pending.** There is currently no motor-control or LeRobot policy backend wired to these commands. The tested `Session` interface is the boundary for a calibrated adapter; camera streaming and physical move recovery must also be integrated and tested on the actual setup. [Hardware validation procedure](docs/hardware.md) · [Recorded software checks](docs/validation.md).
 
-## Repository map
+## Code map
 
 ```text
-chess_perception/
-  board.py       Board geometry, square mapping and FEN serialization
-  detect.py      Optional YOLO detector
-  engine.py      Stockfish integration
-  pipeline.py    Frame perception and optional position analysis
-  game.py        Legal move recovery, manipulation planning and game loop
-  demo.py        Hardware-free example
-tests/           Automated software regression tests
-docs/            Model notes, hardware validation and attributed media
-scripts/         Original training and interactive research utilities
-weights/         Retained training configuration and metrics (no checkpoints)
+checkers_robot/
+  rules.py       Immutable positions and legal checkers moves
+  engine.py      Minimax opponent with alpha-beta pruning
+  game.py        Observation matching, command planning, verified transactions
+  vision.py      Optional OpenCV board rectification and disc detection
+  cli.py         Interactive software game
+  demo.py        Reproducible JSON demo
+examples/        Calibration for the supplied screenshot
+tests/           Software regression tests
+docs/            Calibration, hardware procedure, and prototype media
 ```
 
-## Project context and attribution
-
-This repository explores the chess extension alongside a course checkers prototype. The course media is included with its original context; it is not presented as a demonstration of Pi0 chess gameplay or as evidence of individual ownership of every team component.
-
-Built with [python-chess](https://python-chess.readthedocs.io/), [Stockfish](https://stockfishchess.org/), [Ultralytics](https://github.com/ultralytics/ultralytics), [OpenCV](https://opencv.org/) and [LeRobot](https://github.com/huggingface/lerobot). Dataset provenance is retained in `data/chess_pieces/`.
-
-The original README stated MIT, but the repository did not include a license file. License clarification remains pending; dependencies, datasets and model artifacts retain their own terms.
+The earlier chess experiment remains available in Git history. This revision is focused on checkers. OpenCV and NumPy are optional vision dependencies. No claim of individual ownership of every course-team component is made; the repository does not currently include a project license.

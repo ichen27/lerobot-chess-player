@@ -1,0 +1,11 @@
+{
+  "size": 6,
+  "dark_parity": 0,
+  "orientation": "orange_bottom",
+  "corners": [[104,146],[899,146],[899,940],[104,940]],
+  "min_fraction": 0.2,
+  "colors": {
+    "orange": {"lower": [5,100,80], "upper": [35,255,255]},
+    "gray": {"lower": [0,0,70], "upper": [179,80,185]}
+  }
+}

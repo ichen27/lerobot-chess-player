@@ -1,28 +1,25 @@
 [project]
-name = "chess-perception"
-version = "0.2.0"
-description = "Chess perception, legal move recovery, and robot manipulation planning"
+name = "lerobot-checkers-player"
+version = "0.3.0"
+description = "Checkers rules, board perception, and verified robot move planning"
 readme = "README.md"
 requires-python = ">=3.10"
-dependencies = [
-    "python-chess>=1.999,<2",
-    "opencv-python>=4.8,<5",
-    "numpy>=1.24,<3",
-]
+dependencies = []
 
 [project.optional-dependencies]
-vision = ["ultralytics>=8.3,<9", "supervision>=0.25,<1"]
-training = ["ultralytics>=8.3,<9", "roboflow>=1.1,<2"]
+vision = ["opencv-python>=4.8,<5", "numpy>=1.24,<3"]
 dev = ["pytest>=8,<10"]
 
 [project.scripts]
-chess-demo = "chess_perception.demo:main"
+checkers-demo = "checkers_robot.demo:main"
+checkers-play = "checkers_robot.cli:main"
+checkers-inspect = "checkers_robot.vision:main"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 
 [tool.setuptools.packages.find]
-include = ["chess_perception*"]
+include = ["checkers_robot*"]
 
 [build-system]
 requires = ["setuptools>=68"]
