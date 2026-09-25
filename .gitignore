@@ -28,3 +28,11 @@ data/chess_pieces/test/
 
 # Env
 .env
+
+# Local environments and test artifacts
+.venv/
+.pytest_cache/
+.coverage
+# Curated portfolio media
+!docs/media/*.jpg
+!docs/media/*.png

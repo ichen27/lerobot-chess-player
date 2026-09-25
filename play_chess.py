@@ -71,6 +71,8 @@ def main() -> None:
     except Exception as e:
         print(f"\n[fatal] {e}")
         sys.exit(1)
+    finally:
+        game._cleanup()
 
 
 if __name__ == "__main__":

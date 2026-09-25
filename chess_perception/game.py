@@ -43,6 +43,8 @@ class ChessGame:
         self.camera_index = camera_index
         self.board_orientation = board_orientation
         self.robot_port = robot_port
+        self.policy_steps = 300
+        self.policy_fps = 30
 
         # Initialised in setup().
         self.pipeline: Optional[ChessPerceptionPipeline] = None
@@ -88,20 +90,18 @@ class ChessGame:
         """Load Pi0 policy and connect to the OMX follower robot arm."""
         print(f"[setup] Loading Pi0 policy from {model_path} ...")
         try:
+            from importlib.metadata import version
+            if version("lerobot") != "0.3.4":
+                raise RuntimeError("This experimental adapter targets LeRobot 0.3.4; see docs/hardware.md.")
             from lerobot.policies.pi0.modeling_pi0 import PI0Policy
-            from lerobot.policies.factory import make_policy
-            from lerobot.configs.policies import PreTrainedConfig
-
-            config = PreTrainedConfig.from_pretrained(model_path)
-            config.pretrained_path = model_path
+            import torch
             self.pi0_policy = PI0Policy.from_pretrained(model_path)
-            self.pi0_policy.eval()
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+            self.pi0_policy.to(device).eval()
             print("[setup] Pi0 policy loaded successfully.")
         except Exception as e:
-            print(f"[setup] WARNING: Failed to load Pi0 policy: {e}")
-            print("[setup] Falling back to print-only mode.")
             self.pi0_policy = None
-            return
+            raise RuntimeError(f"Failed to load experimental Pi0 policy: {e}") from e
 
         # Connect to the OMX follower robot
         print(f"[setup] Connecting to OMX follower on {self.robot_port} ...")
@@ -118,9 +118,7 @@ class ChessGame:
             self.robot.bus.enable_torque()
             print("[setup] Robot arm connected and torque enabled.")
         except Exception as e:
-            print(f"[setup] WARNING: Failed to connect robot: {e}")
-            print("[setup] Pi0 will run but cannot send actions to arm.")
-            self.robot = None
+            raise RuntimeError(f"Failed to connect OMX arm: {e}") from e
 
     # ------------------------------------------------------------------
     # Camera helpers
@@ -161,7 +159,7 @@ class ChessGame:
                 print(f"[error] {e}")
                 continue
 
-            result = self.pipeline.process_frame(image, color="white")
+            result = self.pipeline.process_frame(image, color="black", analyze=False)
 
             if result["error"]:
                 print(f"[perception] Error: {result['error']}")
@@ -216,43 +214,15 @@ class ChessGame:
 
             robot_chess_move = chess.Move.from_uci(best_move)
 
-            # Generate move description(s) for the robot arm.
-            move_commands = self._build_move_commands(robot_chess_move)
-
-            for cmd in move_commands:
-                print(f"[robot] {cmd}")
-
-            # Execute via Pi0 or print-only.
-            for cmd in move_commands:
-                self.execute_robot_move(cmd)
-
-            # Apply the move to internal state.
-            self.board.push(robot_chess_move)
-            self.prev_fen = self.board.fen()
-
+            self.execute_robot_turn(robot_chess_move)
             print(f"[robot] Played: {best_move}")
             print(self.board)
             print()
-
-            # Optionally verify the board after robot moves.
-            if self.pi0_policy is not None:
-                print("[verify] Waiting for arm to settle ...")
-                time.sleep(2.0)
-                try:
-                    verify_image = self.capture_image()
-                    verify_result = self.pipeline.process_frame(
-                        verify_image, color="white"
-                    )
-                    if verify_result["fen"]:
-                        print(f"[verify] Post-move FEN: {verify_result['fen']}")
-                except RuntimeError as e:
-                    print(f"[verify] Warning: {e}")
 
             move_number += 1
 
         # Game over.
         self._announce_result()
-        self._cleanup()
 
     # ------------------------------------------------------------------
     # Move detection
@@ -271,71 +241,19 @@ class ChessGame:
         Returns:
             UCI move string (e.g. "e2e4") or None if detection fails.
         """
-        prev_board = chess.Board(prev_fen)
-        new_board = chess.Board(new_fen)
-
-        prev_pieces: dict[int, Optional[chess.Piece]] = {}
-        new_pieces: dict[int, Optional[chess.Piece]] = {}
-
-        for sq in chess.SQUARES:
-            prev_pieces[sq] = prev_board.piece_at(sq)
-            new_pieces[sq] = new_board.piece_at(sq)
-
-        # Find squares that changed.
-        emptied = []   # had a piece before, empty now
-        filled = []    # empty before, has a piece now
-        changed = []   # had a piece before, different piece now
-
-        for sq in chess.SQUARES:
-            old_p = prev_pieces[sq]
-            new_p = new_pieces[sq]
-            if old_p is not None and new_p is None:
-                emptied.append(sq)
-            elif old_p is None and new_p is not None:
-                filled.append(sq)
-            elif old_p is not None and new_p is not None and old_p != new_p:
-                changed.append(sq)
-
-        # Try to match the diff against legal moves.
-        # This is the most reliable approach: enumerate legal moves and see
-        # which one produces the observed board change.
+        try:
+            prev_board = chess.Board(prev_fen)
+            new_board = chess.Board(new_fen)
+        except ValueError:
+            return None
+        if not prev_board.is_valid():
+            return None
+        # Only placement is observed. Preserve history in the authoritative board.
         for move in prev_board.legal_moves:
-            test_board = prev_board.copy()
-            test_board.push(move)
-            # Compare piece placement (ignore castling rights, en passant, etc.)
-            match = True
-            for sq in chess.SQUARES:
-                if test_board.piece_at(sq) != new_board.piece_at(sq):
-                    match = False
-                    break
-            if match:
+            candidate = prev_board.copy()
+            candidate.push(move)
+            if candidate.board_fen() == new_board.board_fen():
                 return move.uci()
-
-        # Fallback heuristic: simple one-piece move.
-        if len(emptied) == 1 and len(filled) == 1 and not changed:
-            return chess.square_name(emptied[0]) + chess.square_name(filled[0])
-
-        # Fallback: one emptied, one changed (capture).
-        if len(emptied) == 1 and not filled and len(changed) == 1:
-            return chess.square_name(emptied[0]) + chess.square_name(changed[0])
-
-        # Castling: two emptied, two filled.
-        if len(emptied) == 2 and len(filled) == 2:
-            # Find the king among emptied squares.
-            for sq in emptied:
-                piece = prev_pieces[sq]
-                if piece and piece.piece_type == chess.KING:
-                    # King's destination is whichever filled square is on the
-                    # same rank.
-                    king_rank = chess.square_rank(sq)
-                    for dst in filled:
-                        if chess.square_rank(dst) == king_rank:
-                            file_diff = chess.square_file(dst) - chess.square_file(sq)
-                            if abs(file_diff) == 2:
-                                return chess.square_name(sq) + chess.square_name(dst)
-            # Generic fallback for castling.
-            return chess.square_name(emptied[0]) + chess.square_name(filled[0])
-
         return None
 
     # ------------------------------------------------------------------
@@ -455,6 +373,35 @@ class ChessGame:
 
         return commands
 
+    def execute_robot_turn(self, move: chess.Move) -> None:
+        """Commit a move only after manual confirmation or matching perception.
+
+        A failure stops the game. A partially moved physical board requires
+        operator recovery; blindly retrying a capture could remove another piece.
+        """
+        if self.board is None or move not in self.board.legal_moves:
+            raise ValueError("Robot move must be legal in the current position.")
+        if self.pi0_policy is not None and move.promotion:
+            raise RuntimeError("Physical promotion requires manual piece replacement.")
+        expected = self.board.copy()
+        expected.push(move)
+        for command in self._build_move_commands(move):
+            self.execute_robot_move(command)
+
+        if self.pi0_policy is None:
+            answer = input("Perform the printed move(s), then type y to confirm: ")
+            if answer.strip().lower() != "y":
+                raise RuntimeError("Move not confirmed; board state was not advanced.")
+        else:
+            time.sleep(2.0)
+            result = self.pipeline.process_frame(self.capture_image(), analyze=False)
+            if result["error"] or not result["fen"]:
+                raise RuntimeError(f"Post-move verification failed: {result['error']}")
+            if chess.Board(result["fen"]).board_fen() != expected.board_fen():
+                raise RuntimeError("Post-move verification mismatch; inspect the board before restarting.")
+        self.board.push(move)
+        self.prev_fen = self.board.fen()
+
     def execute_robot_move(self, move_description: str) -> None:
         """Send a move command to the Pi0 policy or print it.
 
@@ -473,69 +420,45 @@ class ChessGame:
         Captures camera image + robot state, pairs with language instruction,
         runs Pi0 to generate action chunks, and sends them to the OMX arm.
         """
+        if self.robot is None or self.pi0_policy is None:
+            raise RuntimeError("A connected arm and loaded policy are required.")
         import torch
 
-        print(f"[pi0] Executing: {instruction}")
+        keys = [
+            "shoulder_pan.pos", "shoulder_lift.pos", "elbow_flex.pos",
+            "wrist_flex.pos", "wrist_roll.pos", "gripper.pos",
+        ]
+        device = next(self.pi0_policy.parameters()).device
+        self.pi0_policy.reset()  # Discard queued actions from the previous instruction.
         try:
-            # Get current robot observation (joint positions + camera)
-            obs = self.robot.get_observation() if self.robot else {}
-
-            # Build the observation dict Pi0 expects
-            image = self.capture_image()
-            img_tensor = (
-                torch.from_numpy(image)
-                .permute(2, 0, 1)
-                .unsqueeze(0)
-                .float() / 255.0
-            )
-
-            # Build state vector from robot joint positions
-            state_keys = [
-                "shoulder_pan.pos", "shoulder_lift.pos", "elbow_flex.pos",
-                "wrist_flex.pos", "wrist_roll.pos", "gripper.pos",
-            ]
-            state = torch.tensor(
-                [obs.get(k, 0.0) for k in state_keys],
-                dtype=torch.float32,
-            ).unsqueeze(0)
-
-            observation = {
-                "observation.images.innomaker": img_tensor,
-                "observation.state": state,
-                "task": instruction,
-            }
-
-            # Run policy inference to get action chunk
-            with torch.no_grad():
-                action = self.pi0_policy.select_action(observation)
-
-            # action is a dict of {motor.pos: value} or a tensor of shape [chunk, 6]
-            # Execute the action chunk step by step
-            if isinstance(action, torch.Tensor):
-                action_np = action.cpu().numpy()
-                fps = 30
-                for step_idx in range(len(action_np)):
-                    step_action = {
-                        f"{k}.pos": float(action_np[step_idx, i])
-                        for i, k in enumerate([
-                            "shoulder_pan", "shoulder_lift", "elbow_flex",
-                            "wrist_flex", "wrist_roll", "gripper",
-                        ])
-                    }
-                    if self.robot:
-                        self.robot.send_action(step_action)
-                    time.sleep(1.0 / fps)
-            elif isinstance(action, dict):
-                if self.robot:
-                    self.robot.send_action(action)
-                time.sleep(1.0)
-
-            print(f"[pi0] Completed: {instruction}")
-
-        except Exception as e:
-            print(f"[pi0] Error during execution: {e}")
-            import traceback
-            traceback.print_exc()
+            for _ in range(self.policy_steps):
+                started = time.monotonic()
+                obs = self.robot.get_observation()
+                state_values = np.asarray([obs[k] for k in keys], dtype=np.float32)
+                if not np.isfinite(state_values).all():
+                    raise ValueError("Non-finite joint feedback")
+                # OpenCV is BGR; Pi0 was trained on RGB images.
+                image = cv2.cvtColor(self.capture_image(), cv2.COLOR_BGR2RGB)
+                observation = {
+                    "observation.images.innomaker": torch.from_numpy(image).permute(
+                        2, 0, 1).unsqueeze(0).float().div(255).to(device),
+                    "observation.state": torch.from_numpy(state_values).unsqueeze(0).to(device),
+                    "task": [instruction],
+                }
+                with torch.inference_mode():
+                    action = self.pi0_policy.select_action(observation)
+                # LeRobot 0.3.4 select_action returns ONE action per batch, not a chunk.
+                if not isinstance(action, torch.Tensor) or tuple(action.shape) != (1, 6):
+                    raise ValueError("Expected a single policy action with shape (1, 6)")
+                values = action.detach().float().cpu().numpy()[0]
+                if not np.isfinite(values).all():
+                    raise ValueError("Non-finite policy action")
+                self.robot.send_action(dict(zip(keys, map(float, values))))
+                time.sleep(max(0, 1 / self.policy_fps - (time.monotonic() - started)))
+        except Exception as exc:
+            raise RuntimeError(f"Robot execution failed: {instruction}") from exc
+        # A fixed action horizon is not proof of task completion.
+        # execute_robot_turn verifies the resulting board before committing.
 
     # ------------------------------------------------------------------
     # Game end
