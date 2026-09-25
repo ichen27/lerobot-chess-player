@@ -1,8 +1,14 @@
 """YOLO-based chess piece detection."""
 
+from __future__ import annotations
+
 import numpy as np
 from dataclasses import dataclass
-from ultralytics import YOLO
+from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from ultralytics import YOLO
 
 
 # The 12 piece classes expected from the trained YOLO model.
@@ -34,6 +40,12 @@ class ChessPieceDetector:
 
     def load_model(self, weights_path: str) -> None:
         """Load trained YOLO weights."""
+        if not Path(weights_path).is_file():
+            raise FileNotFoundError(f"YOLO weights not found: {weights_path}. Supply trained chess weights.")
+        try:
+            from ultralytics import YOLO
+        except ImportError as exc:
+            raise RuntimeError("Install the vision extra: pip install -e '.[vision]'") from exc
         self.model = YOLO(weights_path)
 
     def detect_pieces(self, image: np.ndarray) -> list[Detection]:

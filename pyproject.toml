@@ -1,19 +1,29 @@
 [project]
 name = "chess-perception"
-version = "0.1.0"
-description = "Chess perception pipeline: camera image → piece detection → board state → best move"
+version = "0.2.0"
+description = "Chess perception, legal move recovery, and robot manipulation planning"
+readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
-    "ultralytics>=8.0.0",
-    "python-chess>=1.9.0",
-    "opencv-python>=4.8.0",
-    "numpy>=1.24.0",
-    "roboflow>=0.2.0",
+    "python-chess>=1.999,<2",
+    "opencv-python>=4.8,<5",
+    "numpy>=1.24,<3",
 ]
+
+[project.optional-dependencies]
+vision = ["ultralytics>=8.3,<9", "supervision>=0.25,<1"]
+training = ["ultralytics>=8.3,<9", "roboflow>=1.1,<2"]
+dev = ["pytest>=8,<10"]
+
+[project.scripts]
+chess-demo = "chess_perception.demo:main"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
 
 [tool.setuptools.packages.find]
 include = ["chess_perception*"]
 
 [build-system]
-requires = ["setuptools>=68.0"]
+requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"

@@ -37,12 +37,16 @@ class ChessPerceptionPipeline:
         self,
         image: np.ndarray,
         color: str = "white",
+        *,
+        analyze: bool = True,
     ) -> dict:
         """Run the full pipeline on a single BGR image.
 
         Args:
             image: BGR image (numpy array).
             color: Side to move ('white' or 'black').
+            analyze: False returns observed placement without validating fabricated
+                history or launching Stockfish. The game matches it to legal moves.
 
         Returns:
             Dict with keys: fen, best_move, move_description, detections,
@@ -78,13 +82,20 @@ class ChessPerceptionPipeline:
             result["annotated_image"] = self._draw_detections(image, detections)
             return result
 
-        # Step 3: Map pieces to squares.
-        piece_map = self.board_extractor.map_pieces_to_squares(detections, corners)
-        result["piece_map"] = piece_map
+        # Placement is observable; castling rights and counters come from game history.
+        try:
+            piece_map = self.board_extractor.map_pieces_to_squares(detections, corners)
+            result["piece_map"] = piece_map
+            fen = self.board_extractor.to_fen(piece_map, color=color)
+            result["fen"] = fen
+        except ValueError as exc:
+            result["error"] = f"Board mapping failed: {exc}"
+            result["annotated_image"] = self._draw_detections(image, detections, corners)
+            return result
 
-        # Step 4: Generate FEN.
-        fen = self.board_extractor.to_fen(piece_map)
-        result["fen"] = fen
+        if not analyze:
+            result["annotated_image"] = self._draw_detections(image, detections, corners)
+            return result
 
         # Step 5: Validate and get best move.
         if not self.engine.validate_fen(fen):

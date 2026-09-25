@@ -39,7 +39,7 @@ class BoardStateExtractor:
     def detect_board_corners(self, image: np.ndarray) -> np.ndarray | None:
         """Find the four outer corners of the chessboard in the image.
 
-        Uses colour segmentation + contour detection to find the largest
+        Uses edge detection + contour detection to find the largest
         quadrilateral, which is assumed to be the board.
 
         Args:
@@ -71,13 +71,8 @@ class BoardStateExtractor:
                 corners = approx.reshape(4, 2).astype(np.float32)
                 return self._order_corners(corners)
 
-        # Fallback: use bounding rect of the largest contour.
-        cnt = contours[0]
-        x, y, w, h = cv2.boundingRect(cnt)
-        corners = np.array([
-            [x, y], [x + w, y], [x + w, y + h], [x, y + h]
-        ], dtype=np.float32)
-        return corners
+        # An arbitrary contour's bounding box is not evidence of a board.
+        return None
 
     @staticmethod
     def _order_corners(pts: np.ndarray) -> np.ndarray:
@@ -112,6 +107,11 @@ class BoardStateExtractor:
         Returns:
             Dict mapping square name (e.g. "e2") to piece class name.
         """
+        board_corners = np.asarray(board_corners, dtype=np.float32)
+        if (board_corners.shape != (4, 2) or not np.isfinite(board_corners).all()
+                or not cv2.isContourConvex(board_corners)
+                or cv2.contourArea(board_corners) < 1):
+            raise ValueError("Board corners must form a finite, convex quadrilateral.")
         # Destination square in normalised space (800x800).
         dst = np.array([
             [0, 0], [800, 0], [800, 800], [0, 800]
@@ -119,16 +119,23 @@ class BoardStateExtractor:
         M = cv2.getPerspectiveTransform(board_corners, dst)
 
         piece_map: dict[str, str] = {}
+        confidences: dict[str, float] = {}
 
         for det in detections:
+            if not np.isfinite([det.cx, det.cy, det.confidence]).all():
+                continue
+            # Reject outside points before warping: OpenCV maps a zero
+            # homogeneous denominator to (0, 0), which looks like a valid square.
+            if cv2.pointPolygonTest(board_corners, (float(det.cx), float(det.cy)), False) < 0:
+                continue
             # Transform the detection centre into normalised board space.
             pt = np.array([[[det.cx, det.cy]]], dtype=np.float32)
             warped = cv2.perspectiveTransform(pt, M)[0][0]
             bx, by = warped
 
-            # Clamp to board bounds.
-            bx = max(0.0, min(bx, 799.0))
-            by = max(0.0, min(by, 799.0))
+            # Off-board pieces must not become phantom pieces on edge squares.
+            if not np.isfinite(warped).all() or not (0 <= bx < 800 and 0 <= by < 800):
+                continue
 
             col = int(bx // 100)  # 0-7
             row = int(by // 100)  # 0-7
@@ -146,8 +153,9 @@ class BoardStateExtractor:
 
             square = f"{file_char}{rank_char}"
             # If two pieces land on the same square, keep the higher-confidence one.
-            if square not in piece_map or det.confidence > 0:
+            if square not in piece_map or det.confidence > confidences[square]:
                 piece_map[square] = det.piece_class
+                confidences[square] = det.confidence
 
         return piece_map
 
@@ -156,15 +164,23 @@ class BoardStateExtractor:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def to_fen(piece_map: dict[str, str]) -> str:
+    def to_fen(piece_map: dict[str, str], color: str = "white") -> str:
         """Convert a piece-on-square mapping to a FEN position string.
 
         Args:
             piece_map: Dict of square name -> piece class (e.g. "white-king").
 
         Returns:
-            FEN position string (board part only, with " w - - 0 1" appended).
+            FEN with requested turn and placeholder history. For an ongoing
+            game, use only its placement and preserve history separately.
         """
+        if color not in ("white", "black"):
+            raise ValueError("color must be white or black")
+        for square, piece in piece_map.items():
+            if len(square) != 2 or square[0] not in FILES or square[1] not in RANKS:
+                raise ValueError(f"Invalid square: {square}")
+            if piece not in _PIECE_FEN:
+                raise ValueError(f"Unsupported piece class: {piece}")
         rows: list[str] = []
         for rank_idx in range(7, -1, -1):  # rank 8 down to rank 1
             rank_char = RANKS[rank_idx]
@@ -178,7 +194,7 @@ class BoardStateExtractor:
                         row += str(empty)
                         empty = 0
                     piece_cls = piece_map[square]
-                    fen_char = _PIECE_FEN.get(piece_cls, "?")
+                    fen_char = _PIECE_FEN[piece_cls]
                     row += fen_char
                 else:
                     empty += 1
@@ -186,5 +202,6 @@ class BoardStateExtractor:
                 row += str(empty)
             rows.append(row)
 
-        # Default: white to move, no castling info, no en passant.
-        return "/".join(rows) + " w - - 0 1"
+        # An image cannot recover castling rights, en passant or move counters.
+        turn = "w" if color == "white" else "b"
+        return "/".join(rows) + f" {turn} - - 0 1"
