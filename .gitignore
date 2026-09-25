@@ -9,7 +9,7 @@ build/
 weights/**/*.pt
 yolov8s.pt
 
-# Dataset (download via script)
+# Local research assets retained from earlier experiments
 data/chess_pieces/train/
 data/chess_pieces/valid/
 data/chess_pieces/test/
@@ -17,7 +17,6 @@ data/chess_pieces/test/
 # Output files
 *.png
 *.jpg
-!data/chess_pieces/data.yaml
 
 # OS
 .DS_Store

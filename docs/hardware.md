@@ -1,51 +1,28 @@
-# Hardware integration and validation
+# Hardware integration
 
-## Current boundary
+The repository currently runs software checkers, image inspection, and command planning. It does not connect to motors or load a LeRobot policy. The supplied arm footage documents an earlier physical prototype, not a hardware test of this revision.
 
-No robot or camera was connected during the September 2026 software revision. Passing software tests does not establish grasp reliability, calibration quality, motor limits, inference latency or autonomous chess gameplay.
+## Adapter boundary
 
-The game adapter targets the ROBOTIS fork's LeRobot 0.3.4 interface. Its local reference exposes six action fields:
+`plan_move(position, move)` emits typed commands:
+- `remove`: remove a captured disc to a designated tray.
+- `move`: pick a disc from a square and place it on another.
+- `crown`: manually mark or stack a promoted piece.
 
-```text
-shoulder_pan.pos, shoulder_lift.pos, elbow_flex.pos,
-wrist_flex.pos, wrist_roll.pos, gripper.pos
-```
+A multi-jump produces each leg and each removal explicitly. Coordinates are board squares, not robot poses. An adapter must calibrate square centers, pickup heights, gripper settings, clearance paths, and the capture tray to the actual arm.
 
-These names and their order must match the actual follower configuration and the training dataset. Do not infer compatibility merely from the name OMX. A newer LeRobot install is explicitly rejected by this adapter because preprocessing and checkpoint formats differ.
+`Session.execute_turn(move, execute, observe=...)` calls an adapter for each command and compares a fresh observation to the expected final ownership map before updating game state. An alternative `confirm=...` callback must return exactly `True` after an operator verifies the move. No confirmation means no execution.
 
-The optional `vision` dependencies are sufficient for camera perception, not arm control. A compatible ROBOTIS LeRobot environment, calibrated hardware, and a compatible Pi0 checkpoint must be supplied separately. There is no verified one-command hardware installation yet.
+An exception or mismatch leaves software state unchanged, but **cannot roll back physical motion**. Stop and reconcile the physical board before resuming; do not automatically replay a partially completed move. Observation comparison cannot verify a crown. Promotion therefore requires a `confirm=...` callback even when `observe=...` is provided. When both callbacks are supplied, both must succeed before state advances.
 
-## Existing model compatibility issue
+## First hardware session
 
-The original research scripts reference `izchen/pi0_chess` and contain a compatibility shim for a checkpoint trained with a newer LeRobot version. That shim deletes configuration fields and modifies cached files. It has not been adopted into the game runner as a verified conversion.
+1. Record the actual arm model, controller, firmware, camera, and compatible control library. Fix the board and camera in place.
+2. Calibrate the selected 6×6 region and HSV ranges at the camera's operating resolution. Verify every occupied square on multiple saved frames.
+3. Establish square-to-arm coordinates and a capture-tray pose. Test unloaded paths and a single pickup/place before playing.
+4. Implement the execution callback with explicit errors and completion reporting. Keep manual crowning in the loop.
+5. Initialize a known position. Test a normal move, a capture, a complete multi-jump, and promotion. Capture before/after images for each case.
+6. Exercise failure recovery: failed grip, interrupted command, displaced disc, incorrect camera reading. Verify state does not advance and reconcile the board manually.
+7. Only then connect the camera, legal-move matching, engine, and execution adapter into a full game loop. Record outcomes and limitations in the validation log.
 
-Use a checkpoint exported for the installed policy version, with validated input/output normalization statistics. A failed load stops the game; it no longer falls back silently to manual mode. The historical `scripts/test_pi0.py` utility remains research code and can connect to motors. It is not part of the automated test suite.
-
-## What the adapter now enforces
-
-- A model and connected robot must exist before execution.
-- A new instruction resets queued policy actions.
-- Each inference step reads real joint feedback; missing/non-finite fields fail.
-- OpenCV BGR images are converted to RGB; language is passed as a batch of one.
-- LeRobot 0.3.4 `select_action` is treated as one `(1, 6)` action, not a full trajectory.
-- Unexpected shapes or non-finite outputs stop execution.
-- The loop targets 30 Hz for at most 300 steps per instruction. This is a step budget, not a measured throughput guarantee or completion detector.
-- Any execution exception stops the game. A partial physical move is not automatically retried.
-- A matching camera observation is required before committing the robot move to game history.
-- Promotion stops before arm motion because replacement of a pawn has not been validated.
-
-These software guards do not implement collision avoidance or calibrated joint/velocity limits. Those must be checked against the real setup.
-
-## Validation when the arm is available
-
-Record the software commit, follower model, motor configuration, calibration identifier, checkpoint revision, normalization files, camera pose, board orientation, piece geometry and compute device.
-
-1. **Perception only:** save representative chessboard images. Check board corners, both orientations, all piece classes, occlusion, and lighting. Checkers footage cannot validate a chess detector.
-2. **Coordinate and camera agreement:** confirm that training and inference use the same camera feature, image convention, joint order and action units. An arm-mounted camera changes the board viewpoint after motion.
-3. **Single action:** validate the installed model and processors in the hardware-specific environment with an operator present. Confirm motor limits and a reliable way to stop motion.
-4. **Single pick-and-place:** test a known source and destination before a game. Record attempts, successes, misses and timings instead of inferring a rate from one clip.
-5. **Closed-loop move:** verify that the final observed piece placement matches the planned position and that a mismatch halts without advancing state.
-6. **Special moves:** test capture disposal and both castling moves separately. A capture-removal instruction has no validated disposal-location convention yet. Keep promotion manual.
-7. **Short game:** start from a known position, exercise a human move and robot reply, and retain video plus logs identifying the exact revision.
-
-Only after these checks should the README describe this revision as demonstrated on hardware. Do not reuse the course checkers video as that evidence.
+No arm, camera stream, manipulation success rate, or end-to-end gameplay was tested for this revision.
